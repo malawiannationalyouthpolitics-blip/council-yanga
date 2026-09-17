@@ -338,6 +338,73 @@ export async function provisionMonitorAccount(params: {
   }
 }
 
+export interface SendCredentialsEmailResult {
+  success: boolean;
+  error: string | null;
+  /** True when running offline/local — no email was actually sent. */
+  skipped?: boolean;
+}
+
+/**
+ * Actually dispatch the "here are your login credentials" email, via the
+ * `send-credentials-email` Edge Function (Resend under the hood — see
+ * supabase/functions/send-credentials-email).
+ *
+ * Previously nothing called anything here: the AdminDashboard "Monitor
+ * Registered & Credentials Sent" screen was purely a UI mock (a setTimeout
+ * that always reported success), so monitors were created but never told
+ * their password. This is the real send.
+ *
+ * In offline/local mode (Supabase not configured) there's no server-side
+ * function to call, so this is a no-op that reports `skipped: true` — the
+ * UI should tell the admin to share the credentials manually in that case.
+ */
+export async function sendCredentialsEmail(params: {
+  monitorName: string;
+  monitorEmail: string;
+  password: string;
+  wards?: string;
+  isResend?: boolean;
+}): Promise<SendCredentialsEmailResult> {
+  if (!isSupabaseConfigured) {
+    return { success: false, error: null, skipped: true };
+  }
+
+  try {
+    const { data, error } = await supabase.functions.invoke('send-credentials-email', {
+      body: {
+        monitorName: params.monitorName,
+        monitorEmail: params.monitorEmail.trim().toLowerCase(),
+        password: params.password,
+        wards: params.wards,
+        isResend: params.isResend,
+      },
+    });
+
+    if (error) {
+      let detail: string | undefined;
+      try {
+        const ctx: any = (error as any).context;
+        if (ctx && typeof ctx.json === 'function') {
+          const body = await ctx.clone().json();
+          detail = body?.error;
+        }
+      } catch {
+        // Response body already consumed or not JSON — fall back below.
+      }
+      return { success: false, error: detail || error.message || 'Failed to send credentials email.' };
+    }
+    if (data?.error) {
+      return { success: false, error: data.error };
+    }
+
+    return { success: true, error: null };
+  } catch (err: any) {
+    console.error('sendCredentialsEmail error:', err);
+    return { success: false, error: err?.message || 'Failed to send credentials email.' };
+  }
+}
+
 /**
  * Sign out the current session
  */
