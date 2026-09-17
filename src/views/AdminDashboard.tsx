@@ -280,7 +280,7 @@ function emptyPF(): PF {
     contractor: '',
     monitor: '',
     disbursed: undefined,
-    fundsUsed: undefined,
+    fundsUsed: 0,
     photos: [],
   };
 }
@@ -328,7 +328,7 @@ function ProjectModal({ initial, initialAddType, onSave, onClose, monitorList }:
     contractor: initial.contractor,
     monitor: initial.monitor,
     disbursed: initial.disbursed ?? getProjectDisbursed(initial),
-    fundsUsed: initial.fundsUsed ?? getProjectUtilised(initial),
+    fundsUsed: initial.fundsUsed ?? 0,
     beneficiaryType: initial.beneficiaryType ?? '',
     photos: initial.photos ? [...initial.photos] : [],
   } : emptyPF());
@@ -740,9 +740,9 @@ function ProjectModal({ initial, initialAddType, onSave, onClose, monitorList }:
               step={10000}
               disabled={isGeneralFieldDisabled}
               className={inp}
-              value={form.fundsUsed ?? ''}
-              onChange={e => s('fundsUsed', e.target.value === '' ? undefined : Number(e.target.value))}
-              placeholder="1850000 (updated from monitor reports & receipts)"
+              value={form.fundsUsed ?? 0}
+              onChange={e => s('fundsUsed', e.target.value === '' ? 0 : Number(e.target.value))}
+              placeholder="0"
             />
           </Fld>
           <Fld label="Total Balance Remaining">

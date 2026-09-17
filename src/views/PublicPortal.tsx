@@ -22,7 +22,7 @@ import {
   appNotifications, AppNotification, MAP_POSITIONS, STATUS_COLORS,
   SECTORS as ALL_SECTORS, Project, Monitor, Feedback, SysNotification, User,
   PROJECT_TYPES, CDF_COMPONENTS, COMMUNITY_DEVELOPMENT_SECTORS, DISTRICTS, CONSTITUENCIES, WARDS,
-  BENEFICIARY_TYPES, getProjectBeneficiaryType, getProjectDisbursed, getProjectUtilised, getProjectBalance, MonitorSubmission,
+  BENEFICIARY_TYPES, getProjectBeneficiaryType, getProjectDisbursed, getProjectUtilised, getProjectBalance, getProjectBalanceRemaining, MonitorSubmission,
   INITIATIVE_COMPONENTS, INITIATIVE_COMPONENT_DESCRIPTIONS, getBeneficiaryTypeForInitiativeComponent, getProjectInitiativeComponent,
   isInitiative, isProject, WardStatusPhoto,
 } from '@/data';
@@ -46,7 +46,7 @@ const TRANSLATIONS: Record<string, Record<string, string>> = {
     Announcements: 'Announcements', Feedback: 'Feedback', Documents: 'Documents',
     kpiHeading: 'Metrics Summary for Projects and Initiatives',
     heroTitle: 'COUNCIL YANGA',
-    heroDesc: 'Track your community developments easily. Follow development projects in real time from planning to completion.',
+    heroDesc: 'Track community development. Follow development project in real time from planning to completion.',
     'Total CDF Projects': 'Total CDF Projects',
     'Total Projects': 'Total Projects', Completed: 'Completed', Ongoing: 'Ongoing',
     'Completed Projects': 'Completed Projects', 'Ongoing Projects': 'Ongoing Projects',
@@ -1014,7 +1014,7 @@ function ProjectSlideCard({
             </div>
             <div>
               <p className="text-[10px] font-bold text-black uppercase tracking-wide">Total Balance</p>
-              <p className="text-xs text-gray-900 font-medium font-semibold" title={`Disbursed: ${formatMK(getProjectDisbursed(p))} | Funds Used: ${formatMK(getProjectUtilised(p))}`}>{formatMK(getProjectBalance(p))}</p>
+              <p className="text-xs text-gray-900 font-medium font-semibold" title={`Allocation: ${formatMK(5000000000)} | Disbursed: ${formatMK(getProjectDisbursed(p))}`}>{formatMK(getProjectBalanceRemaining(p))}</p>
             </div>
             <div>
               <p className="text-[10px] font-bold text-black uppercase tracking-wide">Beneficiaries</p>
@@ -1121,7 +1121,7 @@ function InitiativeSlideCard({
             </div>
             <div>
               <p className="text-[10px] font-bold text-black uppercase tracking-wide">Total Balance</p>
-              <p className="text-xs text-gray-900 font-medium font-semibold" title={`Disbursed: ${formatMK(getProjectDisbursed(p))} | Funds Used: ${formatMK(getProjectUtilised(p))}`}>{formatMK(getProjectBalance(p))}</p>
+              <p className="text-xs text-gray-900 font-medium font-semibold" title={`Allocation: ${formatMK(5000000000)} | Disbursed: ${formatMK(getProjectDisbursed(p))}`}>{formatMK(getProjectBalanceRemaining(p))}</p>
             </div>
             <div>
               <p className="text-[10px] font-bold text-black uppercase tracking-wide">Beneficiaries</p>
