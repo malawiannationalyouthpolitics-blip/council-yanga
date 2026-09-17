@@ -547,7 +547,7 @@ export default function MonitorDashboard({
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mb-4">
                     {([
-                      ['Budget', p.budget > 0 ? `MK ${(p.budget / 1000000).toFixed(1)}M` : '—'],
+                      ['Budget', p.budget > 0 ? formatMK(p.budget) : '—'],
                       ['Beneficiaries', p.beneficiaries > 0 ? p.beneficiaries.toLocaleString() : '—'],
                       ['Beneficiary Type', getProjectBeneficiaryType(p)],
                       ['Expected End', p.expectedCompletion || '—'],

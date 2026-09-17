@@ -42,9 +42,10 @@ import {
   resetPasswordWithSupabase,
   logoutWithSupabase,
   provisionMonitorAccount,
+  sendCredentialsEmail,
 } from './lib/supabaseAuth';
 import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
-import { Database, CheckCircle2 } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 
 export type View = 'public' | 'login' | 'admin' | 'monitor';
 
@@ -105,6 +106,10 @@ export default function App() {
   const [isLiveDb, setIsLiveDb] = useState(false);
   const [view, setView] = useState<View>('public');
   const [authStatus, setAuthStatus] = useState<string | null>(null);
+  // True when the current session is only a local/demo login (see
+  // loginWithSupabase's isLocalOnly) — no real Supabase Auth session exists,
+  // so backend writes gated on a real admin identity will fail.
+  const [isLocalOnlySession, setIsLocalOnlySession] = useState(false);
   const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
 
   // User auth state
@@ -129,7 +134,19 @@ export default function App() {
       setSharedProjects(data.projects);
       setSharedMonitors(data.monitors);
       setSharedVisits(data.visits);
-      setSharedSubmissions(data.submissions);
+      const notesToRemove = [
+        'Report accepted. Good documentation.',
+        'Good report. Continue monitoring km 5–8 section.',
+        'Good report. Continue monitoring km 5–8 section',
+        'Insufficient photo documentation. Please resubmit with at least 4 photos showing all damaged sections clearly.',
+        'Insufficient photo documentation. Please resubmit with at least 4 photos showing all damaged sections clearly',
+        'Excellent documentation. Continue monitoring roofing phase.',
+        'Excellent documentation. Continue monitoring roofing phase',
+      ];
+      const cleanSubmissions = (data.submissions || []).map(s =>
+        notesToRemove.some(n => s.adminNote?.trim() === n.trim()) ? { ...s, adminNote: '' } : s
+      );
+      setSharedSubmissions(cleanSubmissions);
       setSharedSysNotifs(data.sysNotifs);
       setSharedFeedback(data.feedback);
       setSharedAnnouncements(data.announcements);
@@ -240,18 +257,30 @@ export default function App() {
   // STATE WRAPPERS WITH SUPABASE PERSISTENCE
   // --------------------------------------------------------------------------
 
-  const handleUpdateProjects = (action: Project[] | ((prev: Project[]) => Project[])) => {
+  const handleUpdateProjects = (action: Project[] | ((prev: Project[]) => Project[])): Promise<void> => {
+    // Captured outside the state updater so we can await persistence
+    // to Supabase before any dependent writes (e.g. ward_status_photos
+    // rows that reference this project) are attempted.
+    let toPersist: Project[] = [];
     setSharedProjects(prev => {
       const next = typeof action === 'function' ? action(prev) : action;
       // Persist any altered/added projects to Supabase
-      next.forEach(p => {
+      toPersist = next.filter(p => {
         const oldP = prev.find(o => o.id === p.id);
-        if (!oldP || JSON.stringify(oldP) !== JSON.stringify(p)) {
-          upsertProjectInDb(p);
-        }
+        return !oldP || JSON.stringify(oldP) !== JSON.stringify(p);
       });
       return next;
     });
+    // Persist sequentially and await completion so callers can rely on
+    // the project row existing in Supabase before writing dependent rows.
+    return toPersist.reduce(
+      (chain, p) => chain.then(() => upsertProjectInDb(p)).catch(err => {
+        // Keep the chain alive so one bad row cannot strand the rest, but make
+        // the failure loud — this used to fail silently as a bare 400.
+        console.error(`Project "${p.id}" could not be saved to Supabase:`, err);
+      }),
+      Promise.resolve()
+    );
   };
 
   const handleUpdateMonitors = (action: Monitor[] | ((prev: Monitor[]) => Monitor[])) => {
@@ -375,18 +404,39 @@ export default function App() {
     password: string;
   }) => provisionMonitorAccount(params);
 
+  // Actually sends the "here's your login" email (Resend, via the
+  // send-credentials-email Edge Function). This is what was missing before —
+  // provisionMonitor above only ever touched Supabase Auth; nothing emailed
+  // the password anywhere. Falls back to `skipped: true` when Supabase isn't
+  // configured, since there's no server-side function to call in local mode.
+  const sendMonitorCredentialsEmail = async (params: {
+    monitorName: string;
+    monitorEmail: string;
+    password: string;
+    wards?: string;
+    isResend?: boolean;
+  }) => sendCredentialsEmail(params);
+
+  // Awaitable monitor persistence, used right before provisioning a
+  // monitor's login so the `monitors` row is guaranteed to exist in
+  // Supabase first (see AdminDashboard's saveMonitor/handleSendCredentials).
+  const persistMonitor = async (m: Monitor) => {
+    await upsertMonitorInDb(m);
+  };
+
   // --------------------------------------------------------------------------
   // AUTHENTICATION (Phase 3)
   // --------------------------------------------------------------------------
 
   async function handleLogin(email: string, password: string): Promise<string | null> {
-    const { user, error } = await loginWithSupabase(email, password);
+    const { user, error, isLocalOnly } = await loginWithSupabase(email, password);
     if (error || !user) {
       trackEvent('login', 'failed');
       return error || 'Invalid email or password.';
     }
 
     trackEvent('login', 'success', { role: user.role });
+    setIsLocalOnlySession(Boolean(isLocalOnly));
 
     // Link monitorId if missing
     let loggedIn = user;
@@ -446,15 +496,6 @@ export default function App() {
 
   return (
     <>
-      {/* Database Connection Status Pill (Corner indicator) */}
-      {/* <div className="fixed bottom-3 left-3 z-[9000] hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium backdrop-blur-md bg-white/90 border shadow-xs transition-all opacity-85 hover:opacity-100"> */}
-        {/* <Database size={12} className={isLiveDb ? 'text-emerald-600' : 'text-amber-600'} /> */}
-        {/* <span className="text-gray-700"> */}
-          {/* {isLiveDb ? 'Supabase Live DB' : 'Local Sandbox Mode'} */}
-        {/* </span> */}
-        {/* <span className={`w-1.5 h-1.5 rounded-full ${isLiveDb ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`} /> */}
-      {/* </div> */}
-
       {authStatus && (
         <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#145a32] text-white">
           <div className="flex flex-col items-center gap-3">
@@ -493,7 +534,7 @@ export default function App() {
         <AdminDashboard
           onLogout={handleLogout}
           sharedProjects={sharedProjects}
-          setSharedProjects={handleUpdateProjects}
+          setSharedProjects={handleUpdateProjects as any}
           visits={sharedVisits}
           setVisits={handleUpdateVisits as any}
           submissions={sharedSubmissions}
@@ -506,12 +547,15 @@ export default function App() {
           setUsers={handleUpdateUsers}
           sharedMonitors={sharedMonitors}
           setSharedMonitors={handleUpdateMonitors}
+          persistMonitor={persistMonitor}
           sharedAnnouncements={sharedAnnouncements}
           setSharedAnnouncements={handleUpdateAnnouncements as any}
           sharedWardStatusPhotos={sharedWardStatusPhotos}
           setSharedWardStatusPhotos={handleUpdateWardStatusPhotos}
           provisionMonitor={provisionMonitor}
+          sendMonitorCredentialsEmail={sendMonitorCredentialsEmail}
           isLiveDb={isLiveDb}
+          isLocalOnlySession={isLocalOnlySession}
         />
       )}
 

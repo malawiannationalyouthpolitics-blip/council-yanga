@@ -477,14 +477,59 @@ export async function fetchAllInitialData() {
 // MUTATIONS & REALTIME PERSISTENCE
 // ============================================================================
 
+/**
+ * Columns that older databases may not have yet. supabase-js does NOT throw on
+ * a PostgREST error — it resolves with `{ error }` — so a missing column used
+ * to surface only as a silent 400 in the network tab while the app carried on
+ * as if the write had succeeded. We now inspect the error, and if it is a
+ * schema-cache miss (PGRST204) we drop the offending optional column and retry
+ * once, so the write still lands on databases where the migration in
+ * supabase/migrations/20260917100000_projects_photos.sql has not been applied.
+ */
+const OPTIONAL_PROJECT_COLUMNS = ['photos'] as const;
+
+function isMissingColumnError(error: any): string | null {
+  if (!error) return null;
+  const haystack = `${error.code ?? ''} ${error.message ?? ''} ${error.details ?? ''}`;
+  if (error.code !== 'PGRST204' && !/column .* does not exist|could not find the .* column/i.test(haystack)) {
+    return null;
+  }
+  const hit = OPTIONAL_PROJECT_COLUMNS.find(col => new RegExp(`\\b${col}\\b`).test(haystack));
+  return hit ?? null;
+}
+
+async function upsertProjectRows(rows: any[]): Promise<void> {
+  let payload = rows;
+
+  for (let attempt = 0; attempt <= OPTIONAL_PROJECT_COLUMNS.length; attempt++) {
+    const { error } = await supabase
+      .from('projects')
+      .upsert(payload, { onConflict: 'id' });
+
+    if (!error) return;
+
+    const missing = isMissingColumnError(error);
+    if (!missing) throw error;
+
+    console.warn(
+      `Supabase "projects" table has no "${missing}" column — retrying without it. ` +
+      'Apply supabase/migrations/20260917100000_projects_photos.sql to persist this field.'
+    );
+    payload = payload.map(row => {
+      const { [missing]: _dropped, ...rest } = row;
+      return rest;
+    });
+  }
+}
+
 export async function upsertProjectInDb(p: Project): Promise<void> {
   saveStoredProjects(getStoredProjects().map(existing => existing.id === p.id ? p : existing));
   if (!isSupabaseConfigured) return;
   try {
-    const row = projectToDb(p);
-    await supabase.from('projects').upsert(row);
+    await upsertProjectRows([projectToDb(p)]);
   } catch (err) {
     console.error('Failed to upsert project in Supabase:', err);
+    throw err;
   }
 }
 
@@ -678,7 +723,7 @@ export async function autoSeedSupabase(): Promise<boolean> {
 
     // 2. Projects
     const projectRows = initialProjects.map(projectToDb);
-    await supabase.from('projects').upsert(projectRows);
+    await upsertProjectRows(projectRows);
 
     // 3. Visits
     const visitRows = initialVisits.map(visitToDb);
@@ -766,7 +811,28 @@ export function setupRealtimeSubscriptions(callbacks: {
     })
     .subscribe();
 
+  // Back/forward cache handling.
+  //
+  // When a tab is frozen into the bfcache the browser tears the WebSocket down
+  // and logs "Page entered Back-Forward Cache". On restore, supabase-js is
+  // holding a dead socket and realtime updates stop arriving with no visible
+  // error. Disconnect deliberately before freeze and reconnect on restore.
+  const handlePageHide = (e: PageTransitionEvent) => {
+    if (e.persisted) supabase.realtime.disconnect();
+  };
+  const handlePageShow = (e: PageTransitionEvent) => {
+    if (e.persisted) {
+      supabase.realtime.connect();
+      channel.subscribe();
+    }
+  };
+
+  window.addEventListener('pagehide', handlePageHide);
+  window.addEventListener('pageshow', handlePageShow);
+
   return () => {
+    window.removeEventListener('pagehide', handlePageHide);
+    window.removeEventListener('pageshow', handlePageShow);
     supabase.removeChannel(channel);
   };
 }

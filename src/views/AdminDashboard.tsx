@@ -5564,7 +5564,7 @@ export default function AdminDashboard({
                         <BarChart data={SECTORS.map(s=>({sector:s.substring(0,8),budget:sharedProjects.filter(p=>p.sector===s).reduce((t,p)=>t+p.budget,0)/1000000})).filter(d=>d.budget>0)} margin={{ top: 8, right: 16, left: -15, bottom: 25 }}>
                           <XAxis dataKey="sector" tick={{ fontSize: 10 }} interval={0} height={30} />
                           <YAxis tick={{ fontSize: 10 }} />
-                          <Tooltip formatter={(v)=>[`MK ${Number(v).toFixed(1)}M`]} />
+                          <Tooltip formatter={(v)=>[formatMK(Number(v) * 1_000_000)]} />
                           <Bar dataKey="budget" name="Budget" fill="#145a32" radius={[4,4,0,0]} />
                         </BarChart>
                       </ResponsiveContainer>

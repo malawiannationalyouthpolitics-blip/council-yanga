@@ -2330,17 +2330,42 @@ export const STATUS_COLORS: Record<string, string> = {
 // ─────────────────────────────────────────────────────────────────────────────
 // UTILITIES
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Exact currency formatter. Financial accountability figures must never be
+ * rounded away — MK 4,996,500,000 stays MK 4,996,500,000, not "MK 5.0BN".
+ * Fractional tambala are shown only when the value actually has them.
+ */
 export const formatMK = (n: number) => {
-  const isNeg = n < 0;
-  const abs = Math.abs(n);
+  const num = Number(n);
+  if (!Number.isFinite(num)) return 'MK 0';
+  const isNeg = num < 0;
+  const abs = Math.abs(num);
+  const hasFraction = Math.round(abs * 100) % 100 !== 0;
+  const res = `MK ${abs.toLocaleString('en-US', {
+    minimumFractionDigits: hasFraction ? 2 : 0,
+    maximumFractionDigits: 2,
+  })}`;
+  return isNeg ? `-${res}` : res;
+};
+
+/**
+ * Abbreviated formatter — ONLY for space-constrained chart axes and ticks.
+ * Never use this for balances, budgets, disbursements or any figure a user
+ * may read as an authoritative amount.
+ */
+export const formatMKCompact = (n: number) => {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return 'MK 0';
+  const isNeg = num < 0;
+  const abs = Math.abs(num);
   let res = '';
-  if (abs >= 1000000000) {
-    const bn = abs / 1000000000;
+  if (abs >= 1_000_000_000) {
+    const bn = abs / 1_000_000_000;
     res = `MK ${bn % 1 === 0 ? bn.toFixed(0) : bn.toFixed(1)}BN`;
-  } else if (abs >= 1000000) {
-    res = `MK ${(abs / 1000000).toFixed(1)}M`;
+  } else if (abs >= 1_000_000) {
+    res = `MK ${(abs / 1_000_000).toFixed(1)}M`;
   } else {
-    res = `MK ${abs.toLocaleString()}`;
+    res = `MK ${abs.toLocaleString('en-US')}`;
   }
   return isNeg ? `-${res}` : res;
 };
