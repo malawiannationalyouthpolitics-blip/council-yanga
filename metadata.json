@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Remix Remix Remix Remix Remix Remix Likoma-CDF-tracker",
+  "description": "Imported from GitHub: malawiannationalyouthpolitics-blip/Likoma-CDF-tracker",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

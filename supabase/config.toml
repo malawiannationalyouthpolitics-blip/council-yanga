@@ -1,0 +1,9 @@
+project_id = "council-yanga"
+
+# verify_jwt defaults to true, which is what we want here: the platform
+# rejects requests with no/invalid Supabase session token before the
+# function even runs. The function itself does a second, stronger check —
+# confirming the caller's `profiles.role` is 'admin' — since a valid session
+# alone isn't enough to authorize provisioning a monitor account.
+[functions.provision-monitor]
+verify_jwt = true
