@@ -756,7 +756,8 @@ function ProjectModal({ initial, initialAddType, onSave, onClose, monitorList }:
                 const disbursedVal = form.disbursed !== undefined && !isNaN(Number(form.disbursed))
                   ? Number(form.disbursed)
                   : (initial ? getProjectDisbursed(initial) : 0);
-                return formatMK(allocationVal - disbursedVal);
+                const balance = allocationVal - disbursedVal;
+                return balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
               })()}
             />
           </Fld>
