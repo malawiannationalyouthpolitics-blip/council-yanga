@@ -2453,7 +2453,6 @@ export function getProjectBalance(p: Project): number {
 // 5,000,000,000) minus Total Funds Disbursed. Used wherever the public
 // portal needs to mirror that same admin-side figure (e.g. Wards Projects
 // Overview and Wards Initiatives Overview "Total Balance").
-export const TOTAL_FUNDS_ALLOCATION = 5000000000;
 export function getProjectBalanceRemaining(p: Project): number {
   return TOTAL_FUNDS_ALLOCATION - getProjectDisbursed(p);
 }

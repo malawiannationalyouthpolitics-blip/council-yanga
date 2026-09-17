@@ -1,20 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import PublicPortal from './views/PublicPortal';
 import LoginPage from './views/LoginPage';
-import SignupPage from './views/SignupPage';
 import AdminDashboard from './views/AdminDashboard';
 import MonitorDashboard from './views/MonitorDashboard';
+import PasswordRecoveryModal from './components/PasswordRecoveryModal';
 import { Logo, ThreeDotsLoading } from './components/shared';
 import { trackEvent, seedDemoAnalyticsEventsIfEmpty } from './analytics';
 import {
-  projects as initialProjects,
-  scheduledVisits as initialVisits,
-  monitorSubmissions as initialSubmissions,
-  sysNotifications as initialSysNotifs,
-  feedback as initialFeedback,
-  announcements as initialAnnouncements,
-  defaultUsers,
-  monitors as initialMonitors,
   type Project,
   type ScheduledVisit,
   type MonitorSubmission,
@@ -24,17 +16,38 @@ import {
   type Monitor,
   type Announcement,
   type WardStatusPhoto,
-  getStoredWardStatusPhotos,
-  saveStoredWardStatusPhotos,
-  getStoredProjects,
-  saveStoredProjects,
   getStoredUsers,
   saveStoredUsers,
-  getStoredMonitors,
-  saveStoredMonitors,
 } from './data';
+import {
+  fetchAllInitialData,
+  upsertProjectInDb,
+  upsertMonitorInDb,
+  insertVisitInDb,
+  updateVisitInDb,
+  insertSubmissionInDb,
+  updateSubmissionInDb,
+  insertFeedbackInDb,
+  updateFeedbackInDb,
+  insertAnnouncementInDb,
+  updateAnnouncementInDb,
+  insertWardPhotoInDb,
+  insertSysNotifInDb,
+  updateSysNotifInDb,
+  setupRealtimeSubscriptions,
+  computeMonitorStats,
+} from './lib/supabaseService';
+import {
+  loginWithSupabase,
+  resetPasswordWithSupabase,
+  logoutWithSupabase,
+  provisionMonitorAccount,
+  sendCredentialsEmail,
+} from './lib/supabaseAuth';
+import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
+import { CheckCircle2 } from 'lucide-react';
 
-export type View = 'public' | 'login' | 'signup' | 'admin' | 'monitor';
+export type View = 'public' | 'login' | 'admin' | 'monitor';
 
 function SplashScreen({ onDone }: { onDone: () => void }) {
   const [phase, setPhase] = useState<'in' | 'hold' | 'out'>('in');
@@ -64,9 +77,6 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
         className="flex flex-col items-center gap-6"
       >
         <Logo className="h-40 brightness-0 invert" />
-        <p className="text-white/80 text-sm font-semibold tracking-widest uppercase" style={{ fontFamily: 'Outfit, sans-serif' }}>
-          {/* COUNCIL YANGA */}
-        </p>
         {/* Animated dot bar */}
         <div className="flex items-center gap-2 mt-2">
           {[0, 1, 2].map(i => (
@@ -92,16 +102,283 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
 
 export default function App() {
   const [booting, setBooting] = useState(true);
-  useEffect(() => { seedDemoAnalyticsEventsIfEmpty(); }, []);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [isLiveDb, setIsLiveDb] = useState(false);
   const [view, setView] = useState<View>('public');
   const [authStatus, setAuthStatus] = useState<string | null>(null);
+  // True when the current session is only a local/demo login (see
+  // loginWithSupabase's isLocalOnly) — no real Supabase Auth session exists,
+  // so backend writes gated on a real admin identity will fail.
+  const [isLocalOnlySession, setIsLocalOnlySession] = useState(false);
+  const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
 
   // User auth state
-  const [users, setUsers] = useState<User[]>(() => getStoredUsers());
+  const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
-  // Shared monitor list (kept in sync so admin changes are visible to login)
-  const [sharedMonitors, setSharedMonitors] = useState<Monitor[]>(() => getStoredMonitors());
+  // Core Data States
+  const [sharedProjects, setSharedProjects] = useState<Project[]>([]);
+  const [sharedMonitors, setSharedMonitors] = useState<Monitor[]>([]);
+  const [sharedVisits, setSharedVisits] = useState<ScheduledVisit[]>([]);
+  const [sharedSubmissions, setSharedSubmissions] = useState<MonitorSubmission[]>([]);
+  const [sharedSysNotifs, setSharedSysNotifs] = useState<SysNotification[]>([]);
+  const [sharedFeedback, setSharedFeedback] = useState<Feedback[]>([]);
+  const [sharedAnnouncements, setSharedAnnouncements] = useState<Announcement[]>([]);
+  const [sharedWardStatusPhotos, setSharedWardStatusPhotos] = useState<WardStatusPhoto[]>([]);
+
+  // Initial Load & Seeding from Supabase
+  const loadData = useCallback(async () => {
+    setDataLoading(true);
+    try {
+      const data = await fetchAllInitialData();
+      setSharedProjects(data.projects);
+      setSharedMonitors(data.monitors);
+      setSharedVisits(data.visits);
+      const notesToRemove = [
+        'Report accepted. Good documentation.',
+        'Good report. Continue monitoring km 5–8 section.',
+        'Good report. Continue monitoring km 5–8 section',
+        'Insufficient photo documentation. Please resubmit with at least 4 photos showing all damaged sections clearly.',
+        'Insufficient photo documentation. Please resubmit with at least 4 photos showing all damaged sections clearly',
+        'Excellent documentation. Continue monitoring roofing phase.',
+        'Excellent documentation. Continue monitoring roofing phase',
+      ];
+      const cleanSubmissions = (data.submissions || []).map(s =>
+        notesToRemove.some(n => s.adminNote?.trim() === n.trim()) ? { ...s, adminNote: '' } : s
+      );
+      setSharedSubmissions(cleanSubmissions);
+      setSharedSysNotifs(data.sysNotifs);
+      setSharedFeedback(data.feedback);
+      setSharedAnnouncements(data.announcements);
+      setSharedWardStatusPhotos(data.wardStatusPhotos);
+      setUsers(data.users);
+      setIsLiveDb(data.isLive);
+    } catch (err) {
+      console.error('Failed to load initial data:', err);
+    } finally {
+      setDataLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    seedDemoAnalyticsEventsIfEmpty();
+    loadData();
+  }, [loadData]);
+
+  // Catch "forgot password" email links landing back on the app.
+  //
+  // Supabase's client redirects here with recovery tokens in the URL hash
+  // (implicit flow — the default outside of @supabase/ssr) and, once it
+  // parses them, establishes a short-lived session and fires a
+  // `PASSWORD_RECOVERY` auth event. We listen for that event and show the
+  // "set new password" modal on top of whatever view is currently active.
+  //
+  // As a fallback for the moment before the listener is attached (the
+  // client can process the URL during its own initialization, which can
+  // race the subscription below), we also check the URL hash directly.
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+
+    if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+      setShowPasswordRecovery(true);
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setShowPasswordRecovery(true);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Realtime Subscriptions (Phase 5 - Step 17)
+  useEffect(() => {
+    if (!isLiveDb) return;
+
+    const unsubscribe = setupRealtimeSubscriptions({
+      onProjectChange: updatedProj => {
+        setSharedProjects(prev => {
+          const exists = prev.some(p => p.id === updatedProj.id);
+          return exists ? prev.map(p => (p.id === updatedProj.id ? updatedProj : p)) : [updatedProj, ...prev];
+        });
+      },
+      onVisitChange: updatedVisit => {
+        setSharedVisits(prev => {
+          const exists = prev.some(v => v.id === updatedVisit.id);
+          return exists ? prev.map(v => (v.id === updatedVisit.id ? updatedVisit : v)) : [updatedVisit, ...prev];
+        });
+      },
+      onSubmissionChange: updatedSub => {
+        setSharedSubmissions(prev => {
+          const exists = prev.some(s => s.id === updatedSub.id);
+          return exists ? prev.map(s => (s.id === updatedSub.id ? updatedSub : s)) : [updatedSub, ...prev];
+        });
+      },
+      onFeedbackChange: updatedFb => {
+        setSharedFeedback(prev => {
+          const exists = prev.some(f => f.id === updatedFb.id);
+          return exists ? prev.map(f => (f.id === updatedFb.id ? updatedFb : f)) : [updatedFb, ...prev];
+        });
+      },
+      onAnnouncementChange: updatedA => {
+        setSharedAnnouncements(prev => {
+          const exists = prev.some(a => a.id === updatedA.id);
+          return exists ? prev.map(a => (a.id === updatedA.id ? updatedA : a)) : [updatedA, ...prev];
+        });
+      },
+      onSysNotifChange: updatedSn => {
+        setSharedSysNotifs(prev => {
+          const exists = prev.some(sn => sn.id === updatedSn.id);
+          return exists ? prev.map(sn => (sn.id === updatedSn.id ? updatedSn : sn)) : [updatedSn, ...prev];
+        });
+      },
+      onWardPhotoChange: updatedPhoto => {
+        setSharedWardStatusPhotos(prev => {
+          const exists = prev.some(w => w.id === updatedPhoto.id);
+          return exists ? prev.map(w => (w.id === updatedPhoto.id ? updatedPhoto : w)) : [updatedPhoto, ...prev];
+        });
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isLiveDb]);
+
+  // Recalculate monitor statistics when projects or submissions update
+  useEffect(() => {
+    if (sharedMonitors.length > 0) {
+      setSharedMonitors(prev => prev.map(m => computeMonitorStats(m, sharedProjects, sharedSubmissions)));
+    }
+  }, [sharedProjects, sharedSubmissions]);
+
+  // --------------------------------------------------------------------------
+  // STATE WRAPPERS WITH SUPABASE PERSISTENCE
+  // --------------------------------------------------------------------------
+
+  const handleUpdateProjects = (action: Project[] | ((prev: Project[]) => Project[])): Promise<void> => {
+    // Captured outside the state updater so we can await persistence
+    // to Supabase before any dependent writes (e.g. ward_status_photos
+    // rows that reference this project) are attempted.
+    let toPersist: Project[] = [];
+    setSharedProjects(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      // Persist any altered/added projects to Supabase
+      toPersist = next.filter(p => {
+        const oldP = prev.find(o => o.id === p.id);
+        return !oldP || JSON.stringify(oldP) !== JSON.stringify(p);
+      });
+      return next;
+    });
+    // Persist sequentially and await completion so callers can rely on
+    // the project row existing in Supabase before writing dependent rows.
+    return toPersist.reduce(
+      (chain, p) => chain.then(() => upsertProjectInDb(p)),
+      Promise.resolve()
+    );
+  };
+
+  const handleUpdateMonitors = (action: Monitor[] | ((prev: Monitor[]) => Monitor[])) => {
+    setSharedMonitors(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(m => {
+        const oldM = prev.find(o => o.id === m.id);
+        if (!oldM || JSON.stringify(oldM) !== JSON.stringify(m)) {
+          upsertMonitorInDb(m);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateVisits = (action: ScheduledVisit[] | ((prev: ScheduledVisit[]) => ScheduledVisit[])) => {
+    setSharedVisits(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(v => {
+        const oldV = prev.find(o => o.id === v.id);
+        if (!oldV) {
+          insertVisitInDb(v);
+        } else if (JSON.stringify(oldV) !== JSON.stringify(v)) {
+          updateVisitInDb(v);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateSubmissions = (action: MonitorSubmission[] | ((prev: MonitorSubmission[]) => MonitorSubmission[])) => {
+    setSharedSubmissions(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(s => {
+        const oldS = prev.find(o => o.id === s.id);
+        if (!oldS) {
+          insertSubmissionInDb(s);
+        } else if (JSON.stringify(oldS) !== JSON.stringify(s)) {
+          updateSubmissionInDb(s);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateFeedback = (action: Feedback[] | ((prev: Feedback[]) => Feedback[])) => {
+    setSharedFeedback(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(fb => {
+        const oldFb = prev.find(o => o.id === fb.id);
+        if (!oldFb) {
+          insertFeedbackInDb(fb);
+        } else if (JSON.stringify(oldFb) !== JSON.stringify(fb)) {
+          updateFeedbackInDb(fb);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateAnnouncements = (action: Announcement[] | ((prev: Announcement[]) => Announcement[])) => {
+    setSharedAnnouncements(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(a => {
+        const oldA = prev.find(o => o.id === a.id);
+        if (!oldA) {
+          insertAnnouncementInDb(a);
+        } else if (JSON.stringify(oldA) !== JSON.stringify(a)) {
+          updateAnnouncementInDb(a);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateWardStatusPhotos = (action: WardStatusPhoto[] | ((prev: WardStatusPhoto[]) => WardStatusPhoto[])) => {
+    setSharedWardStatusPhotos(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(w => {
+        const oldW = prev.find(o => o.id === w.id);
+        if (!oldW) {
+          insertWardPhotoInDb(w);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleUpdateSysNotifs = (action: SysNotification[] | ((prev: SysNotification[]) => SysNotification[])) => {
+    setSharedSysNotifs(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      next.forEach(sn => {
+        const oldSn = prev.find(o => o.id === sn.id);
+        if (!oldSn) {
+          insertSysNotifInDb(sn);
+        } else if (JSON.stringify(oldSn) !== JSON.stringify(sn)) {
+          updateSysNotifInDb(sn);
+        }
+      });
+      return next;
+    });
+  };
 
   const handleUpdateUsers = (action: User[] | ((prev: User[]) => User[])) => {
     setUsers(prev => {
@@ -111,95 +388,104 @@ export default function App() {
     });
   };
 
-  const handleUpdateMonitors = (action: Monitor[] | ((prev: Monitor[]) => Monitor[])) => {
-    setSharedMonitors(prev => {
-      const next = typeof action === 'function' ? action(prev) : action;
-      saveStoredMonitors(next);
-      return next;
-    });
+  // Creates/resets a monitor's real Supabase Auth login via the
+  // service-role Edge Function (see lib/supabaseAuth.ts). Falls back to a
+  // no-op when Supabase isn't configured, since local mode already logs
+  // monitors in against the `users` array above.
+  const provisionMonitor = async (params: {
+    action: 'create' | 'reset-password';
+    monitorId: string;
+    name: string;
+    email: string;
+    password: string;
+  }) => provisionMonitorAccount(params);
+
+  // Actually sends the "here's your login" email (Resend, via the
+  // send-credentials-email Edge Function). This is what was missing before —
+  // provisionMonitor above only ever touched Supabase Auth; nothing emailed
+  // the password anywhere. Falls back to `skipped: true` when Supabase isn't
+  // configured, since there's no server-side function to call in local mode.
+  const sendMonitorCredentialsEmail = async (params: {
+    monitorName: string;
+    monitorEmail: string;
+    password: string;
+    wards?: string;
+    isResend?: boolean;
+  }) => sendCredentialsEmail(params);
+
+  // Awaitable monitor persistence, used right before provisioning a
+  // monitor's login so the `monitors` row is guaranteed to exist in
+  // Supabase first (see AdminDashboard's saveMonitor/handleSendCredentials).
+  const persistMonitor = async (m: Monitor) => {
+    await upsertMonitorInDb(m);
   };
 
-  // Shared project/visit/submission/notif state
-  const [sharedProjects, setSharedProjects] = useState<Project[]>(() => getStoredProjects());
-  const [sharedVisits, setSharedVisits] = useState<ScheduledVisit[]>(initialVisits);
-  const [sharedSubmissions, setSharedSubmissions] = useState<MonitorSubmission[]>(initialSubmissions);
-  const [sharedSysNotifs, setSharedSysNotifs] = useState<SysNotification[]>(initialSysNotifs);
-  const [sharedFeedback, setSharedFeedback] = useState<Feedback[]>(initialFeedback);
-  const [sharedAnnouncements, setSharedAnnouncements] = useState<Announcement[]>(initialAnnouncements);
-  const [sharedWardStatusPhotos, setSharedWardStatusPhotos] = useState<WardStatusPhoto[]>(() => getStoredWardStatusPhotos());
+  // --------------------------------------------------------------------------
+  // AUTHENTICATION (Phase 3)
+  // --------------------------------------------------------------------------
 
-  const handleUpdateProjects = (action: Project[] | ((prev: Project[]) => Project[])) => {
-    setSharedProjects(prev => {
-      const next = typeof action === 'function' ? action(prev) : action;
-      saveStoredProjects(next);
-      return next;
-    });
-  };
+  async function handleLogin(email: string, password: string): Promise<string | null> {
+    const { user, error, isLocalOnly } = await loginWithSupabase(email, password);
+    if (error || !user) {
+      trackEvent('login', 'failed');
+      return error || 'Invalid email or password.';
+    }
 
-  const handleUpdateWardStatusPhotos = (action: WardStatusPhoto[] | ((prev: WardStatusPhoto[]) => WardStatusPhoto[])) => {
-    setSharedWardStatusPhotos(prev => {
-      const next = typeof action === 'function' ? action(prev) : action;
-      saveStoredWardStatusPhotos(next);
-      return next;
-    });
-  };
-
-  function handleLogin(email: string, password: string): string | null {
-    let user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
-    if (!user) { trackEvent('login', 'failed'); return 'Invalid email or password.'; }
     trackEvent('login', 'success', { role: user.role });
-    // If monitor has no monitorId yet, try to find their Monitor record by email
+    setIsLocalOnlySession(Boolean(isLocalOnly));
+
+    // Link monitorId if missing
+    let loggedIn = user;
     if (user.role === 'monitor' && !user.monitorId) {
       const matched = sharedMonitors.find(m => m.email.toLowerCase() === email.toLowerCase());
       if (matched) {
-        const updated = { ...user, monitorId: matched.id };
-        handleUpdateUsers(prev => prev.map(u => u.id === user!.id ? updated : u));
-        user = updated;
+        loggedIn = { ...user, monitorId: matched.id };
       }
     }
-    const loggedIn = user;
+
     setAuthStatus('Signing in...');
     setTimeout(() => {
       setCurrentUser(loggedIn);
       setView(loggedIn.role === 'admin' ? 'admin' : 'monitor');
       setAuthStatus(null);
-    }, 650);
+    }, 450);
+
     return null;
   }
 
-  function handleSignup(newUser: User): string | null {
-    if (newUser.role === 'monitor') {
-      return 'Monitors cannot sign up. Field monitor accounts are created and provisioned directly by the Council Administrator, who will send your login credentials via email.';
+  // Public admin self-signup has been intentionally removed. Admin accounts
+  // are created by hand in the Supabase dashboard (Authentication > Users),
+  // and "Enable email signups" should be turned off in the project's Auth
+  // settings so the public `supabase.auth.signUp` endpoint is blocked too —
+  // removing this UI alone doesn't stop someone calling the API directly.
+
+  async function handleResetPassword(email: string, newPassword: string): Promise<string | null> {
+    const { success, error } = await resetPasswordWithSupabase(email, newPassword);
+    if (!success) {
+      return error || 'Failed to send password reset.';
     }
-    if (users.find(u => u.email.toLowerCase() === newUser.email.toLowerCase())) {
-      return 'An account with this email already exists.';
+    return null;
+  }
+
+  function handlePasswordRecoveryDone() {
+    setShowPasswordRecovery(false);
+    // Strip the recovery tokens out of the URL so a refresh doesn't
+    // re-trigger the modal, and land the user on the normal login form.
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
-    const preparedUser = { ...newUser };
-    trackEvent('signup', newUser.role);
-    setAuthStatus('Account created. Preparing login...');
-    setTimeout(() => {
-      handleUpdateUsers(prev => [...prev, preparedUser]);
-      // Redirect to login so they sign in with their new credentials
-      setView('login');
-      setAuthStatus(null);
-    }, 700);
-    return null;
+    setCurrentUser(null);
+    setView('login');
   }
 
-  function handleResetPassword(email: string, newPassword: string): string | null {
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (!user) return 'No account found with that email address.';
-    handleUpdateUsers(prev => prev.map(u => u.id === user.id ? { ...u, password: newPassword } : u));
-    return null;
-  }
-
-  function handleLogout() {
+  async function handleLogout() {
     setAuthStatus('Signing out...');
+    await logoutWithSupabase();
     setTimeout(() => {
       setCurrentUser(null);
       setView('public');
       setAuthStatus(null);
-    }, 650);
+    }, 450);
   }
 
   if (booting) return <SplashScreen onDone={() => setBooting(false)} />;
@@ -207,9 +493,7 @@ export default function App() {
   return (
     <>
       {authStatus && (
-        <div
-          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#145a32] text-white"
-        >
+        <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[#145a32] text-white">
           <div className="flex flex-col items-center gap-3">
             <ThreeDotsLoading dotColor="bg-white" size="w-2.5 h-2.5" />
             <p className="text-xs font-semibold tracking-wider text-white/95 uppercase" style={{ fontFamily: 'Outfit, sans-serif' }}>
@@ -219,19 +503,26 @@ export default function App() {
         </div>
       )}
 
+      {dataLoading && !booting && (
+        <div className="fixed inset-0 z-[998] flex flex-col items-center justify-center bg-white/80 backdrop-blur-xs">
+          <div className="flex flex-col items-center gap-3">
+            <ThreeDotsLoading dotColor="bg-[#145a32]" size="w-3 h-3" />
+            <p className="text-xs font-medium text-gray-600" style={{ fontFamily: 'Outfit, sans-serif' }}>
+              Loading Council Yanga records…
+            </p>
+          </div>
+        </div>
+      )}
+
+      {showPasswordRecovery && (
+        <PasswordRecoveryModal onDone={handlePasswordRecoveryDone} />
+      )}
+
       {view === 'login' && (
         <LoginPage
           onLogin={handleLogin}
-          onSignup={() => setView('signup')}
           onBack={() => setView('public')}
           onResetPassword={handleResetPassword}
-        />
-      )}
-
-      {view === 'signup' && (
-        <SignupPage
-          onSignup={handleSignup}
-          onBack={() => setView('login')}
         />
       )}
 
@@ -239,23 +530,28 @@ export default function App() {
         <AdminDashboard
           onLogout={handleLogout}
           sharedProjects={sharedProjects}
-          setSharedProjects={handleUpdateProjects}
+          setSharedProjects={handleUpdateProjects as any}
           visits={sharedVisits}
-          setVisits={setSharedVisits}
+          setVisits={handleUpdateVisits as any}
           submissions={sharedSubmissions}
-          setSubmissions={setSharedSubmissions}
+          setSubmissions={handleUpdateSubmissions as any}
           sysNotifs={sharedSysNotifs}
-          setSysNotifs={setSharedSysNotifs}
+          setSysNotifs={handleUpdateSysNotifs as any}
           sharedFeedback={sharedFeedback}
-          setSharedFeedback={setSharedFeedback}
+          setSharedFeedback={handleUpdateFeedback as any}
           users={users}
           setUsers={handleUpdateUsers}
           sharedMonitors={sharedMonitors}
           setSharedMonitors={handleUpdateMonitors}
+          persistMonitor={persistMonitor}
           sharedAnnouncements={sharedAnnouncements}
-          setSharedAnnouncements={setSharedAnnouncements}
+          setSharedAnnouncements={handleUpdateAnnouncements as any}
           sharedWardStatusPhotos={sharedWardStatusPhotos}
           setSharedWardStatusPhotos={handleUpdateWardStatusPhotos}
+          provisionMonitor={provisionMonitor}
+          sendMonitorCredentialsEmail={sendMonitorCredentialsEmail}
+          isLiveDb={isLiveDb}
+          isLocalOnlySession={isLocalOnlySession}
         />
       )}
 
@@ -266,11 +562,11 @@ export default function App() {
           monitorName={currentUser?.name || 'Monitor'}
           sharedProjects={sharedProjects}
           visits={sharedVisits}
-          setVisits={setSharedVisits}
+          setVisits={handleUpdateVisits as any}
           submissions={sharedSubmissions}
-          setSubmissions={setSharedSubmissions}
+          setSubmissions={handleUpdateSubmissions as any}
           sysNotifs={sharedSysNotifs}
-          setSysNotifs={setSharedSysNotifs}
+          setSysNotifs={handleUpdateSysNotifs as any}
           sharedMonitors={sharedMonitors}
         />
       )}
@@ -282,8 +578,8 @@ export default function App() {
           sharedMonitors={sharedMonitors}
           sharedSubmissions={sharedSubmissions}
           users={users}
-          setSharedFeedback={setSharedFeedback}
-          setSysNotifs={setSharedSysNotifs}
+          setSharedFeedback={handleUpdateFeedback as any}
+          setSysNotifs={handleUpdateSysNotifs as any}
           sharedAnnouncements={sharedAnnouncements}
           sharedWardStatusPhotos={sharedWardStatusPhotos}
         />

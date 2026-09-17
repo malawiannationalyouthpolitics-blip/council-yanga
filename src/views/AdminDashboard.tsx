@@ -47,7 +47,10 @@ import {
 interface AdminDashboardProps {
   onLogout: () => void;
   sharedProjects: Project[];
-  setSharedProjects: React.Dispatch<React.SetStateAction<Project[]>>;
+  // Returns a Promise that resolves once any added/changed projects have
+  // been persisted to Supabase, so callers can await it before writing
+  // rows (e.g. ward_status_photos) that have a foreign key on projects.
+  setSharedProjects: (action: Project[] | ((prev: Project[]) => Project[])) => Promise<void> | void;
   visits: ScheduledVisit[];
   setVisits: React.Dispatch<React.SetStateAction<ScheduledVisit[]>>;
   submissions: MonitorSubmission[];
@@ -3061,14 +3064,16 @@ export default function AdminDashboard({
   }, [dashboardFilteredProjects]);
 
   // Project CRUD
-  function saveProject(p: Project) {
+  async function saveProject(p: Project) {
     const today = new Date().toISOString().slice(0, 10);
     const isInit = isInitiative(p);
     let targetId = p.id;
     let finalPhotos = p.photos && p.photos.length > 0 ? [...p.photos] : [];
 
     if (sharedProjects.find(x => x.id === p.id)) {
-      setSharedProjects(prev => prev.map(x => x.id === p.id ? { ...p, lastUpdated: today } : x));
+      // Await the persist so the row is guaranteed to exist in Supabase
+      // before we write any ward_status_photos rows that reference it.
+      await setSharedProjects(prev => prev.map(x => x.id === p.id ? { ...p, lastUpdated: today } : x));
       show(`${isInit ? 'Initiative' : 'Project'} "${p.name}" updated.`);
     } else {
       const prefix = isInit ? 'CY-INIT' : 'CY-2026';
@@ -3081,7 +3086,12 @@ export default function AdminDashboard({
             : 'https://images.unsplash.com/photo-1590486803833-1c5dc8ddd4c8?auto=format&fit=crop&w=1000&q=80'
         ];
       }
-      setSharedProjects(prev => [{ ...p, id: newId, photos: finalPhotos, createdDate: today, lastUpdated: today }, ...prev]);
+      // Await the insert so the new project row exists in Supabase before
+      // the ward_status_photos rows below (which have a foreign key on
+      // project_id) are inserted. Without this, the two writes race and
+      // the photo insert can hit the DB before the project row commits,
+      // causing "violates foreign key constraint ward_status_photos_project_id_fkey".
+      await setSharedProjects(prev => [{ ...p, id: newId, photos: finalPhotos, createdDate: today, lastUpdated: today }, ...prev]);
       show(`${isInit ? 'Initiative' : 'Project'} "${p.name}" added.`);
     }
 
