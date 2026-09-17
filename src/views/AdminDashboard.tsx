@@ -327,8 +327,8 @@ function ProjectModal({ initial, initialAddType, onSave, onClose, monitorList }:
     implementingDept: initial.implementingDept,
     contractor: initial.contractor,
     monitor: initial.monitor,
-    disbursed: initial.disbursed,
-    fundsUsed: initial.fundsUsed,
+    disbursed: initial.disbursed ?? getProjectDisbursed(initial),
+    fundsUsed: initial.fundsUsed ?? getProjectUtilised(initial),
     beneficiaryType: initial.beneficiaryType ?? '',
     photos: initial.photos ? [...initial.photos] : [],
   } : emptyPF());
