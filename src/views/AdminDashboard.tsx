@@ -752,13 +752,11 @@ function ProjectModal({ initial, initialAddType, onSave, onClose, monitorList }:
               disabled={isGeneralFieldDisabled}
               className={`${inp} bg-gray-50 text-gray-800 font-semibold cursor-not-allowed`}
               value={(() => {
+                const allocationVal = 5000000000;
                 const disbursedVal = form.disbursed !== undefined && !isNaN(Number(form.disbursed))
                   ? Number(form.disbursed)
                   : (initial ? getProjectDisbursed(initial) : 0);
-                const usedVal = form.fundsUsed !== undefined && !isNaN(Number(form.fundsUsed))
-                  ? Number(form.fundsUsed)
-                  : (initial ? getProjectUtilised(initial) : 0);
-                return formatMK(disbursedVal - usedVal);
+                return formatMK(allocationVal - disbursedVal);
               })()}
             />
           </Fld>
